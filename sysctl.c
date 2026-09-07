@@ -72,7 +72,7 @@ static sysctl_error_t sysctl_mib_to_name(const int *mib, int mib_len,
         return SYSCTL_ERR_INVALID;
     }
     
-    if (sysctl(mib, mib_len, buffer, size, NULL, 0) < 0) {
+    if (sysctl((int *)mib, mib_len, buffer, size, NULL, 0) < 0) {
         if (errno == ENOENT) return SYSCTL_ERR_NOT_FOUND;
         if (errno == EACCES) return SYSCTL_ERR_PERMISSION;
         return SYSCTL_ERR_IO;
@@ -103,19 +103,15 @@ static sysctl_error_t sysctl_name_to_mib(const char *name, int *mib, int *mib_le
 }
 
 /* ============================================================
- * INTERNAL: Detect OID Type
+ * INTERNAL: Detect OID Type (No CTLFORMAT)
  * ============================================================ */
 
 static sysctl_error_t sysctl_detect_type(const int *mib, int mib_len,
                                          sysctl_type_t *type,
-                                         int *kind,
-                                         char *format, size_t format_size) {
+                                         int *kind) {
     int type_mib[CTL_MAXNAME + 2];
     int val = 0;
     size_t len = sizeof(int);
-    char fmt[64];
-    size_t fmt_len = sizeof(fmt);
-    int ret;
     
     if (!mib || !type) {
         return SYSCTL_ERR_INVALID;
@@ -158,21 +154,6 @@ static sysctl_error_t sysctl_detect_type(const int *mib, int mib_len,
             break;
         default:
             *type = SYSCTL_TYPE_UNKNOWN;
-    }
-    
-    /* Get format string */
-    if (format) {
-        memcpy(type_mib, mib, mib_len * sizeof(int));
-        type_mib[mib_len] = CTLFORMAT;
-        fmt_len = sizeof(fmt);
-        
-        ret = sysctl(type_mib, mib_len + 1, fmt, &fmt_len, NULL, 0);
-        if (ret == 0 && fmt_len > 0) {
-            strncpy(format, fmt, format_size - 1);
-            format[format_size - 1] = '\0';
-        } else {
-            format[0] = '\0';
-        }
     }
     
     return SYSCTL_OK;
@@ -247,7 +228,7 @@ sysctl_error_t sysctl_get_value(const char *name, sysctl_value_t *value, sysctl_
     
     /* Get type */
     sysctl_type_t val_type;
-    err = sysctl_detect_type(mib, mib_len, &val_type, NULL, NULL, 0);
+    err = sysctl_detect_type(mib, mib_len, &val_type, NULL);
     if (err != SYSCTL_OK && err != SYSCTL_ERR_IO) {
         return err;
     }
@@ -384,7 +365,7 @@ sysctl_error_t sysctl_set_value(const char *name, sysctl_value_t *value, sysctl_
     if (type) {
         val_type = *type;
     } else {
-        err = sysctl_detect_type(mib, mib_len, &val_type, NULL, NULL, 0);
+        err = sysctl_detect_type(mib, mib_len, &val_type, NULL);
         if (err != SYSCTL_OK) {
             return err;
         }
@@ -442,7 +423,7 @@ sysctl_error_t sysctl_set_value(const char *name, sysctl_value_t *value, sysctl_
 }
 
 /* ============================================================
- * PUBLIC: Get Modules (Kernel Modules) - FIXED
+ * PUBLIC: Get Modules (Kernel Modules)
  * ============================================================ */
 
 sysctl_error_t sysctl_get_modules(module_info_t **modules, int *count) {
@@ -834,6 +815,87 @@ sysctl_error_t sysctl_get_ip_forwarding(int *enabled) {
 }
 
 /* ============================================================
+ * PUBLIC: Get Value by MIB
+ * ============================================================ */
+
+sysctl_error_t sysctl_get_value_by_mib(const int *mib, int mib_len,
+                                       sysctl_value_t *value, sysctl_type_t *type) {
+    char name[512];
+    size_t name_len = sizeof(name);
+    sysctl_error_t err;
+    
+    if (!mib || !value) {
+        return SYSCTL_ERR_INVALID;
+    }
+    
+    /* Convert MIB to name */
+    err = sysctl_mib_to_name(mib, mib_len, name, &name_len);
+    if (err != SYSCTL_OK) {
+        return err;
+    }
+    
+    return sysctl_get_value(name, value, type);
+}
+
+/* ============================================================
+ * PUBLIC: Set Value by MIB
+ * ============================================================ */
+
+sysctl_error_t sysctl_set_value_by_mib(const int *mib, int mib_len,
+                                       sysctl_value_t *value, sysctl_type_t *type) {
+    char name[512];
+    size_t name_len = sizeof(name);
+    sysctl_error_t err;
+    
+    if (!mib || !value) {
+        return SYSCTL_ERR_INVALID;
+    }
+    
+    /* Convert MIB to name */
+    err = sysctl_mib_to_name(mib, mib_len, name, &name_len);
+    if (err != SYSCTL_OK) {
+        return err;
+    }
+    
+    return sysctl_set_value(name, value, type);
+}
+
+/* ============================================================
+ * PUBLIC: List Nodes
+ * ============================================================ */
+
+sysctl_error_t sysctl_list_nodes(sysctl_state_t *state,
+                                 const int *mib, int mib_len,
+                                 sysctl_node_t **nodes, int *count) {
+    /* TODO: Implement full tree walking */
+    if (!state || !nodes || !count) {
+        return SYSCTL_ERR_INVALID;
+    }
+    
+    *nodes = NULL;
+    *count = 0;
+    return SYSCTL_ERR_NOT_IMPLEMENTED;
+}
+
+sysctl_error_t sysctl_list_all(sysctl_state_t *state) {
+    if (!state) {
+        return SYSCTL_ERR_INVALID;
+    }
+    return SYSCTL_ERR_NOT_IMPLEMENTED;
+}
+
+sysctl_error_t sysctl_search(sysctl_state_t *state, const char *pattern,
+                             sysctl_node_t **results, int *count) {
+    if (!state || !pattern || !results || !count) {
+        return SYSCTL_ERR_INVALID;
+    }
+    
+    *results = NULL;
+    *count = 0;
+    return SYSCTL_ERR_NOT_IMPLEMENTED;
+}
+
+/* ============================================================
  * PUBLIC: Free Functions
  * ============================================================ */
 
@@ -866,4 +928,24 @@ void sysctl_free_nodes(sysctl_node_t *nodes, int count) {
     }
     
     free(nodes);
+}
+
+/* ============================================================
+ * INTERNAL: Get Value Raw
+ * ============================================================ */
+
+sysctl_error_t sysctl_get_value_raw(const int *mib, int mib_len,
+                                    void *buffer, size_t *size) {
+    if (!mib || !size) {
+        return SYSCTL_ERR_INVALID;
+    }
+    
+    if (sysctl((int *)mib, mib_len, buffer, size, NULL, 0) < 0) {
+        if (errno == EACCES) return SYSCTL_ERR_PERMISSION;
+        if (errno == ENOENT) return SYSCTL_ERR_NOT_FOUND;
+        if (errno == ENOMEM) return SYSCTL_ERR_NO_MEMORY;
+        return SYSCTL_ERR_IO;
+    }
+    
+    return SYSCTL_OK;
 }
