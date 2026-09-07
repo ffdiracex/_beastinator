@@ -442,139 +442,20 @@ sysctl_error_t sysctl_set_value(const char *name, sysctl_value_t *value, sysctl_
 }
 
 /* ============================================================
- * PUBLIC: Get Modules (Kernel Modules)
+ * PUBLIC: Get Modules (Kernel Modules) - FIXED
  * ============================================================ */
 
 sysctl_error_t sysctl_get_modules(module_info_t **modules, int *count) {
-    struct kld_file_stat *kfs = NULL;
-    int mib[3] = {CTL_KERN, KERN_KLD, KLD_GET};
-    size_t len = 0;
-    int num_modules = 0;
-    module_info_t *result = NULL;
-    int *fileids = NULL;
-    int num_ids = 0;
-    
-    if (!modules || !count) {
-        return SYSCTL_ERR_INVALID;
-    }
-    
-    *modules = NULL;
-    *count = 0;
-    
-    /* Try using kldnext/kldfirst to enumerate modules */
-    int fileid = kldfirst(0);
-    if (fileid < 0) {
-        /* Fallback: use sysctl with KERN_KLD */
-        if (sysctl(mib, 3, NULL, &len, NULL, 0) < 0) {
-            return sysctl_get_modules_fallback(modules, count);
-        }
-        
-        if (len == 0) {
-            return SYSCTL_OK;
-        }
-        
-        kfs = malloc(len);
-        if (!kfs) {
-            return SYSCTL_ERR_NO_MEMORY;
-        }
-        
-        if (sysctl(mib, 3, kfs, &len, NULL, 0) < 0) {
-            free(kfs);
-            return SYSCTL_ERR_IO;
-        }
-        
-        num_modules = len / sizeof(struct kld_file_stat);
-        
-        result = malloc(num_modules * sizeof(module_info_t));
-        if (!result) {
-            free(kfs);
-            return SYSCTL_ERR_NO_MEMORY;
-        }
-        
-        for (int i = 0; i < num_modules; i++) {
-            struct kld_file_stat *kf = &kfs[i];
-            strncpy(result[i].name, kf->name, sizeof(result[i].name) - 1);
-            result[i].name[sizeof(result[i].name) - 1] = '\0';
-            result[i].id = kf->id;
-            result[i].size = kf->size;
-            result[i].refs = kf->refs;
-            result[i].version = 0;
-            result[i].is_loaded = 1;
-            
-            /* Check if module file exists */
-            char path[512];
-            snprintf(path, sizeof(path), "/boot/kernel/%s.ko", result[i].name);
-            if (access(path, F_OK) == 0) {
-                result[i].is_in_filesystem = 1;
-            } else {
-                snprintf(path, sizeof(path), "/boot/modules/%s.ko", result[i].name);
-                if (access(path, F_OK) == 0) {
-                    result[i].is_in_filesystem = 1;
-                } else {
-                    result[i].is_in_filesystem = 0;
-                }
-            }
-        }
-        
-        free(kfs);
-        *modules = result;
-        *count = num_modules;
-        return SYSCTL_OK;
-    }
-    
-    /* Use kldnext/kldfirst to enumerate */
-    result = malloc(128 * sizeof(module_info_t));
-    if (!result) {
-        return SYSCTL_ERR_NO_MEMORY;
-    }
-    
-    while (fileid > 0 && num_modules < 128) {
-        struct kld_file_stat stat;
-        if (kldstat(fileid, &stat) == 0) {
-            strncpy(result[num_modules].name, stat.name, sizeof(result[num_modules].name) - 1);
-            result[num_modules].name[sizeof(result[num_modules].name) - 1] = '\0';
-            result[num_modules].id = stat.id;
-            result[num_modules].size = stat.size;
-            result[num_modules].refs = stat.refs;
-            result[num_modules].version = 0;
-            result[num_modules].is_loaded = 1;
-            
-            /* Check if module file exists */
-            char path[512];
-            snprintf(path, sizeof(path), "/boot/kernel/%s.ko", stat.name);
-            if (access(path, F_OK) == 0) {
-                result[num_modules].is_in_filesystem = 1;
-            } else {
-                snprintf(path, sizeof(path), "/boot/modules/%s.ko", stat.name);
-                if (access(path, F_OK) == 0) {
-                    result[num_modules].is_in_filesystem = 1;
-                } else {
-                    result[num_modules].is_in_filesystem = 0;
-                }
-            }
-            num_modules++;
-        }
-        fileid = kldnext(fileid);
-    }
-    
-    *modules = result;
-    *count = num_modules;
-    return SYSCTL_OK;
-}
-
-/* ============================================================
- * INTERNAL: Fallback Module Detection Using kldstat Command
- * ============================================================ */
-
-static sysctl_error_t sysctl_get_modules_fallback(module_info_t **modules, int *count) {
     FILE *fp;
     char line[512];
     module_info_t *result = NULL;
     int num = 0;
-    int capacity = 64;
+    int capacity = 128;
     int id, refs;
     size_t size;
     char name[256];
+    char addr[32];
+    char *p;
     
     if (!modules || !count) {
         return SYSCTL_ERR_INVALID;
@@ -583,6 +464,49 @@ static sysctl_error_t sysctl_get_modules_fallback(module_info_t **modules, int *
     *modules = NULL;
     *count = 0;
     
+    /* First try using kldstat(2) directly */
+    int fileid = kldfirst(0);
+    if (fileid > 0) {
+        result = malloc(capacity * sizeof(module_info_t));
+        if (!result) {
+            return SYSCTL_ERR_NO_MEMORY;
+        }
+        
+        while (fileid > 0 && num < capacity) {
+            struct kld_file_stat stat;
+            if (kldstat(fileid, &stat) == 0) {
+                strncpy(result[num].name, stat.name, sizeof(result[num].name) - 1);
+                result[num].name[sizeof(result[num].name) - 1] = '\0';
+                result[num].id = stat.id;
+                result[num].size = stat.size;
+                result[num].refs = stat.refs;
+                result[num].version = 0;
+                result[num].is_loaded = 1;
+                
+                /* Check if module file exists in filesystem */
+                char path[512];
+                snprintf(path, sizeof(path), "/boot/kernel/%s.ko", stat.name);
+                if (access(path, F_OK) == 0) {
+                    result[num].is_in_filesystem = 1;
+                } else {
+                    snprintf(path, sizeof(path), "/boot/modules/%s.ko", stat.name);
+                    if (access(path, F_OK) == 0) {
+                        result[num].is_in_filesystem = 1;
+                    } else {
+                        result[num].is_in_filesystem = 0;
+                    }
+                }
+                num++;
+            }
+            fileid = kldnext(fileid);
+        }
+        
+        *modules = result;
+        *count = num;
+        return SYSCTL_OK;
+    }
+    
+    /* Fallback: use kldstat command */
     fp = popen("kldstat 2>/dev/null", "r");
     if (!fp) {
         return SYSCTL_ERR_IO;
@@ -598,8 +522,13 @@ static sysctl_error_t sysctl_get_modules_fallback(module_info_t **modules, int *
     fgets(line, sizeof(line), fp);
     
     while (fgets(line, sizeof(line), fp) && num < capacity) {
+        /* Remove newline */
+        p = strchr(line, '\n');
+        if (p) *p = '\0';
+        
         /* Parse: Id Refs Address Size Name */
-        if (sscanf(line, "%d %d %*s %zx %s", &id, &refs, &size, name) == 4) {
+        /* Format: "1 1 0xffffffff80200000 0x12345678 kernel" */
+        if (sscanf(line, "%d %d %s %zx %[^ ]", &id, &refs, addr, &size, name) == 5) {
             strncpy(result[num].name, name, sizeof(result[num].name) - 1);
             result[num].name[sizeof(result[num].name) - 1] = '\0';
             result[num].id = id;
@@ -905,7 +834,7 @@ sysctl_error_t sysctl_get_ip_forwarding(int *enabled) {
 }
 
 /* ============================================================
- * PUBLIC: Free Nodes
+ * PUBLIC: Free Functions
  * ============================================================ */
 
 void sysctl_free_modules(module_info_t *modules, int count) {
