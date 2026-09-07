@@ -10,10 +10,21 @@
 #define __BSD_VISIBLE 1
 
 #include "syssec.h"
+#include "scanner.h"
 #include "utils.h"
 #include "logging.h"
 #include "config.h"
 #include "report.h"
+#include <sys/sysctl.h>
+#include <sys/user.h>
+#include <sys/proc.h>
+#include <sys/stat.h>
+#include <sys/mount.h>
+#include <dirent.h>
+#include <pwd.h>
+#include <grp.h>
+#include <signal.h>
+#include <time.h>
 
 /* ============================================================
  * DATA STRUCTURES
@@ -37,6 +48,7 @@ typedef struct {
     char hostname[256];
     char kernel[512];
     time_t timestamp;
+    int initialized;
 } scanner_state_t;
 
 static scanner_state_t state;
@@ -53,7 +65,7 @@ static void add_result(const char *name, const char *desc,
     scan_result_t *r = &state.results[state.count];
     strncpy(r->name, name, sizeof(r->name) - 1);
     strncpy(r->description, desc, sizeof(r->description) - 1);
-    strncpy(r->recommendation, rec, sizeof(r->recommendation) - 1);
+    strncpy(r->recommendation, rec ? rec : "", sizeof(r->recommendation) - 1);
     r->severity = severity;
     r->status = status;
     strncpy(r->category, category ? category : "General", sizeof(r->category) - 1);
@@ -62,17 +74,38 @@ static void add_result(const char *name, const char *desc,
 }
 
 /* ============================================================
+ * INTERNAL: Check if user is excluded
+ * ============================================================ */
+
+static int is_user_excluded(const char *username) {
+    if (!username || state.config.exclude_users[0] == '\0') {
+        return 0;
+    }
+    return util_string_list_contains(state.config.exclude_users, username);
+}
+
+/* ============================================================
+ * INTERNAL: Check if service is excluded
+ * ============================================================ */
+
+static int is_service_excluded(const char *service) {
+    if (!service || state.config.exclude_services[0] == '\0') {
+        return 0;
+    }
+    return util_string_list_contains(state.config.exclude_services, service);
+}
+
+/* ============================================================
  * SCAN: System Information
  * ============================================================ */
 
-void scan_system_info(void) {
+static void scan_system_info(void) {
     long physmem;
     int ncpu;
     char hostname[256];
     char kernel[512];
-    char uptime_str[64];
-    double load1, load5, load15;
     time_t uptime;
+    double load1, load5, load15;
     
     /* Hostname */
     if (util_get_hostname(hostname, sizeof(hostname)) == SYSSEC_OK) {
@@ -104,6 +137,7 @@ void scan_system_info(void) {
         int days = uptime / 86400;
         int hours = (uptime % 86400) / 3600;
         int mins = (uptime % 3600) / 60;
+        char uptime_str[64];
         snprintf(uptime_str, sizeof(uptime_str), "%d days, %02d:%02d:%02d", 
                  days, hours, mins, (int)(uptime % 60));
         char desc[512];
@@ -135,7 +169,7 @@ void scan_system_info(void) {
  * SCAN: Running Processes
  * ============================================================ */
 
-void scan_processes(void) {
+static void scan_processes(void) {
     int count = util_get_process_count();
     if (count > 0) {
         char desc[512];
@@ -144,7 +178,6 @@ void scan_processes(void) {
         int status = STATUS_PASS;
         char rec[256] = {0};
         
-        /* Check for excessive processes */
         if (count > 500) {
             status = STATUS_WARN;
             snprintf(rec, sizeof(rec), "High process count - check for runaway processes");
@@ -160,7 +193,7 @@ void scan_processes(void) {
  * SCAN: User Accounts
  * ============================================================ */
 
-void scan_users(void) {
+static void scan_users(void) {
     struct passwd *pw;
     int total_users = 0;
     int root_users = 0;
@@ -169,6 +202,11 @@ void scan_users(void) {
     
     setpwent();
     while ((pw = getpwent()) != NULL) {
+        /* Skip excluded users */
+        if (is_user_excluded(pw->pw_name)) {
+            continue;
+        }
+        
         total_users++;
         
         if (pw->pw_uid == 0 && strcmp(pw->pw_name, "root") != 0) {
@@ -204,7 +242,7 @@ void scan_users(void) {
  * SCAN: Filesystem
  * ============================================================ */
 
-void scan_filesystem(void) {
+static void scan_filesystem(void) {
     const struct {
         const char *path;
         mode_t expected;
@@ -237,11 +275,9 @@ void scan_filesystem(void) {
             status = (st.st_mode & S_IWOTH) ? STATUS_FAIL : STATUS_WARN;
         }
         
-        char rec[512];
+        char rec[512] = {0};
         if (status != STATUS_PASS) {
             snprintf(rec, sizeof(rec), "Set permissions to %03o", critical_files[i].expected);
-        } else {
-            rec[0] = '\0';
         }
         
         add_result(critical_files[i].name, desc, rec,
@@ -255,7 +291,7 @@ void scan_filesystem(void) {
  * SCAN: Network
  * ============================================================ */
 
-void scan_network(void) {
+static void scan_network(void) {
     /* Check listening ports */
     FILE *fp = popen("sockstat -4 -l 2>/dev/null | grep -v '^USER' | wc -l", "r");
     if (fp) {
@@ -290,7 +326,7 @@ void scan_network(void) {
  * SCAN: Services
  * ============================================================ */
 
-void scan_services(void) {
+static void scan_services(void) {
     const char *critical_services[] = {
         "syslogd",
         "cron",
@@ -299,6 +335,11 @@ void scan_services(void) {
     };
     
     for (int i = 0; critical_services[i] != NULL; i++) {
+        /* Skip excluded services */
+        if (is_service_excluded(critical_services[i])) {
+            continue;
+        }
+        
         int running = util_process_running(critical_services[i]);
         char desc[512];
         snprintf(desc, sizeof(desc), "Service '%s' is %s", 
@@ -320,7 +361,7 @@ void scan_services(void) {
  * SCAN: Security Settings
  * ============================================================ */
 
-void scan_security(void) {
+static void scan_security(void) {
     /* Check securelevel */
     int securelevel;
     size_t len = sizeof(securelevel);
@@ -355,7 +396,7 @@ void scan_security(void) {
  * SCAN: Logs
  * ============================================================ */
 
-void scan_logs(void) {
+static void scan_logs(void) {
     const char *log_files[] = {
         "/var/log/messages",
         "/var/log/auth.log",
@@ -383,7 +424,7 @@ void scan_logs(void) {
  * SCAN: Updates
  * ============================================================ */
 
-void scan_updates(void) {
+static void scan_updates(void) {
     if (util_file_exists("/usr/sbin/freebsd-update")) {
         add_result("Update System", "freebsd-update is installed",
                   "Run: freebsd-update fetch install", SEVERITY_INFO, STATUS_PASS, "Updates");
@@ -397,7 +438,7 @@ void scan_updates(void) {
  * SCAN: TTY Security
  * ============================================================ */
 
-void scan_ttys(void) {
+static void scan_ttys(void) {
     if (!util_file_exists("/proc")) {
         add_result("TTY Scan", "/proc is not mounted",
                   "Mount /proc: mount -t procfs proc /proc",
@@ -449,6 +490,83 @@ void scan_ttys(void) {
 }
 
 /* ============================================================
+ * SCAN: Firewall
+ * ============================================================ */
+
+static void scan_firewall(void) {
+    int pf_enabled = util_process_running("pfctl");
+    int ipfw_enabled = util_process_running("ipfw");
+    
+    if (pf_enabled || ipfw_enabled) {
+        add_result("Firewall", "A firewall is running",
+                  "Keep firewall enabled", SEVERITY_INFO, STATUS_PASS, "Security");
+    } else {
+        add_result("Firewall", "No firewall appears to be running",
+                  "Enable PF: add 'pf_enable=\"YES\"' to /etc/rc.conf", 
+                  SEVERITY_CRITICAL, STATUS_FAIL, "Security");
+    }
+}
+
+/* ============================================================
+ * SCAN: SSH Configuration
+ * ============================================================ */
+
+static void scan_ssh(void) {
+    FILE *fp = fopen("/etc/ssh/sshd_config", "r");
+    if (!fp) {
+        add_result("SSH Config", "Cannot read /etc/ssh/sshd_config",
+                  "Ensure SSH is installed and configured", 
+                  SEVERITY_WARNING, STATUS_FAIL, "Security");
+        return;
+    }
+    
+    char line[1024];
+    int permit_root = 0;
+    int password_auth = 0;
+    
+    while (fgets(line, sizeof(line), fp)) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+        if (line[0] == '#' || line[0] == '\0') continue;
+        
+        if (strstr(line, "PermitRootLogin") && strstr(line, "yes")) {
+            permit_root = 1;
+        }
+        if (strstr(line, "PasswordAuthentication") && strstr(line, "yes")) {
+            password_auth = 1;
+        }
+    }
+    fclose(fp);
+    
+    if (permit_root) {
+        add_result("SSH Root Login", "PermitRootLogin is enabled",
+                  "Set 'PermitRootLogin no' or 'PermitRootLogin prohibit-password'",
+                  SEVERITY_CRITICAL, STATUS_FAIL, "Security");
+    } else {
+        add_result("SSH Root Login", "PermitRootLogin is properly restricted",
+                  "Keep root login disabled", SEVERITY_INFO, STATUS_PASS, "Security");
+    }
+    
+    if (password_auth) {
+        add_result("SSH Password Auth", "PasswordAuthentication is enabled",
+                  "Use key-based authentication and disable passwords",
+                  SEVERITY_WARNING, STATUS_WARN, "Security");
+    } else {
+        add_result("SSH Password Auth", "PasswordAuthentication is disabled",
+                  "Keep password authentication disabled", SEVERITY_INFO, STATUS_PASS, "Security");
+    }
+}
+
+/* ============================================================
+ * SCAN: File Permissions
+ * ============================================================ */
+
+static void scan_permissions(void) {
+    /* This is a wrapper around scan_filesystem, but we can add more */
+    /* Already handled in scan_filesystem */
+}
+
+/* ============================================================
  * PUBLIC: scanner_init
  * ============================================================ */
 
@@ -460,6 +578,7 @@ syssec_error_t scanner_init(syssec_config_t *config) {
     memset(&state, 0, sizeof(state));
     memcpy(&state.config, config, sizeof(syssec_config_t));
     state.timestamp = time(NULL);
+    state.initialized = 1;
     
     util_get_hostname(state.hostname, sizeof(state.hostname));
     util_get_kernel_version(state.kernel, sizeof(state.kernel));
@@ -472,8 +591,13 @@ syssec_error_t scanner_init(syssec_config_t *config) {
  * ============================================================ */
 
 syssec_error_t scanner_run(void) {
+    if (!state.initialized) {
+        return SYSSEC_ERR_NOT_IMPLEMENTED;
+    }
+    
     log_info("Starting system scan on %s", state.hostname);
     
+    /* Run all scans */
     scan_system_info();
     scan_processes();
     scan_users();
@@ -484,6 +608,9 @@ syssec_error_t scanner_run(void) {
     scan_logs();
     scan_updates();
     scan_ttys();
+    scan_firewall();
+    scan_ssh();
+    scan_permissions();
     
     log_info("Scan complete: %d checks performed", state.count);
     return SYSSEC_OK;
@@ -495,6 +622,73 @@ syssec_error_t scanner_run(void) {
 
 int scanner_get_results(void) {
     return state.count;
+}
+
+/* ============================================================
+ * PUBLIC: scanner_get_result
+ * ============================================================ */
+
+syssec_error_t scanner_get_result(int index, scanner_result_t *result) {
+    if (index < 0 || index >= state.count) {
+        return SYSSEC_ERR_INVALID;
+    }
+    
+    if (!result) {
+        return SYSSEC_ERR_INVALID;
+    }
+    
+    scan_result_t *r = &state.results[index];
+    strncpy(result->name, r->name, sizeof(result->name) - 1);
+    strncpy(result->description, r->description, sizeof(result->description) - 1);
+    strncpy(result->recommendation, r->recommendation, sizeof(result->recommendation) - 1);
+    result->severity = r->severity;
+    result->status = r->status;
+    strncpy(result->category, r->category, sizeof(result->category) - 1);
+    
+    return SYSSEC_OK;
+}
+
+/* ============================================================
+ * PUBLIC: scanner_get_critical_count
+ * ============================================================ */
+
+int scanner_get_critical_count(void) {
+    int count = 0;
+    for (int i = 0; i < state.count; i++) {
+        if (state.results[i].status == STATUS_FAIL && 
+            state.results[i].severity == SEVERITY_CRITICAL) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/* ============================================================
+ * PUBLIC: scanner_get_warning_count
+ * ============================================================ */
+
+int scanner_get_warning_count(void) {
+    int count = 0;
+    for (int i = 0; i < state.count; i++) {
+        if (state.results[i].status == STATUS_WARN) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/* ============================================================
+ * PUBLIC: scanner_get_pass_count
+ * ============================================================ */
+
+int scanner_get_pass_count(void) {
+    int count = 0;
+    for (int i = 0; i < state.count; i++) {
+        if (state.results[i].status == STATUS_PASS) {
+            count++;
+        }
+    }
+    return count;
 }
 
 /* ============================================================
@@ -528,16 +722,9 @@ syssec_error_t scanner_export_to_report(syssec_report_t *report) {
  * ============================================================ */
 
 void scanner_print_summary(void) {
-    int passed = 0, warnings = 0, failed = 0;
-    
-    for (int i = 0; i < state.count; i++) {
-        switch (state.results[i].status) {
-            case STATUS_PASS: passed++; break;
-            case STATUS_WARN: warnings++; break;
-            case STATUS_FAIL: failed++; break;
-            default: break;
-        }
-    }
+    int passed = scanner_get_pass_count();
+    int warnings = scanner_get_warning_count();
+    int failed = scanner_get_critical_count();
     
     printf("\n" COLOR_BOLD "═══════════════════════════════════════════════════════════════════\n");
     printf("                    SCAN SUMMARY\n");
@@ -590,11 +777,80 @@ void scanner_print_results(void) {
 }
 
 /* ============================================================
- * PUBLIC: scanner_cleanup
+ * PUBLIC: scanner_print_results_by_category
  * ============================================================ */
 
-void scanner_cleanup(void) {
-    /* Nothing to free currently, but keep for future */
+void scanner_print_results_by_category(const char *category) {
+    if (!category) return;
+    
+    int found = 0;
+    printf("\n" COLOR_BOLD "═══ Results: %s ═══\n" COLOR_RESET, category);
+    printf("\n");
+    
+    for (int i = 0; i < state.count; i++) {
+        if (strcmp(state.results[i].category, category) == 0) {
+            scan_result_t *r = &state.results[i];
+            const char *color = syssec_status_color(r->status);
+            
+            printf("  %s[%s]%s %s\n",
+                   color,
+                   syssec_status_str(r->status),
+                   COLOR_RESET,
+                   r->name);
+            printf("    %s\n", r->description);
+            if (r->recommendation[0] != '\0' && r->status != STATUS_PASS) {
+                printf("    " COLOR_YELLOW "→ %s" COLOR_RESET "\n", r->recommendation);
+            }
+            printf("\n");
+            found++;
+        }
+    }
+    
+    if (found == 0) {
+        printf("  No results in category '%s'\n", category);
+    }
+}
+
+/* ============================================================
+ * PUBLIC: scanner_print_critical
+ * ============================================================ */
+
+void scanner_print_critical(void) {
+    printf("\n" COLOR_BOLD "═══ CRITICAL ISSUES ═══\n" COLOR_RESET);
+    printf("\n");
+    
+    int found = 0;
+    for (int i = 0; i < state.count; i++) {
+        if (state.results[i].status == STATUS_FAIL && 
+            state.results[i].severity == SEVERITY_CRITICAL) {
+            scan_result_t *r = &state.results[i];
+            printf(COLOR_RED "  [CRITICAL] %s\n" COLOR_RESET, r->name);
+            printf("    %s\n", r->description);
+            printf("    → %s\n", r->recommendation);
+            printf("\n");
+            found++;
+        }
+    }
+    
+    if (found == 0) {
+        printf(COLOR_GREEN "  No critical issues found\n" COLOR_RESET);
+    }
+}
+
+/* ============================================================
+ * PUBLIC: scanner_has_critical
+ * ============================================================ */
+
+int scanner_has_critical(void) {
+    return scanner_get_critical_count() > 0;
+}
+
+/* ============================================================
+ * PUBLIC: scanner_has_warnings
+ * ============================================================ */
+
+int scanner_has_warnings(void) {
+    return scanner_get_warning_count() > 0;
 }
 
 /* ============================================================
@@ -612,3 +868,80 @@ const char* scanner_get_hostname(void) {
 const char* scanner_get_kernel(void) {
     return state.kernel;
 }
+
+/* ============================================================
+ * PUBLIC: scanner_get_timestamp
+ * ============================================================ */
+
+time_t scanner_get_timestamp(void) {
+    return state.timestamp;
+}
+
+/* ============================================================
+ * PUBLIC: scanner_is_initialized
+ * ============================================================ */
+
+int scanner_is_initialized(void) {
+    return state.initialized;
+}
+
+/* ============================================================
+ * PUBLIC: scanner_cleanup
+ * ============================================================ */
+
+void scanner_cleanup(void) {
+    /* Nothing to free currently, but keep for future */
+}
+
+/* ============================================================
+ * PUBLIC: scanner_get_results_json
+ * ============================================================ */
+
+char* scanner_get_results_json(void) {
+    char *result = malloc(1024);
+    if (!result) return NULL;
+    
+    snprintf(result, 1024,
+            "{\"scanner\":\"syssec\",\"version\":\"%s\",\"results\":%d}",
+            SYSSEC_VERSION, state.count);
+    
+    return result;
+}
+
+/* ============================================================
+ * PUBLIC: scanner_get_summary_json
+ * ============================================================ */
+
+char* scanner_get_summary_json(void) {
+    char *result = malloc(1024);
+    if (!result) return NULL;
+    
+    snprintf(result, 1024,
+            "{\"scanner\":\"syssec\",\"version\":\"%s\","
+            "\"passed\":%d,\"warnings\":%d,\"failed\":%d,\"total\":%d}",
+            SYSSEC_VERSION,
+            scanner_get_pass_count(),
+            scanner_get_warning_count(),
+            scanner_get_critical_count(),
+            state.count);
+    
+    return result;
+}
+
+/* ============================================================
+ * PUBLIC: Wrapper Functions (for compatibility)
+ * ============================================================ */
+
+void scanner_check_system(void) { scan_system_info(); }
+void scanner_check_processes(void) { scan_processes(); }
+void scanner_check_users(void) { scan_users(); }
+void scanner_check_filesystem(void) { scan_filesystem(); }
+void scanner_check_network(void) { scan_network(); }
+void scanner_check_services(void) { scan_services(); }
+void scanner_check_security(void) { scan_security(); }
+void scanner_check_logs(void) { scan_logs(); }
+void scanner_check_updates(void) { scan_updates(); }
+void scanner_check_ttys(void) { scan_ttys(); }
+void scanner_check_firewall(void) { scan_firewall(); }
+void scanner_check_ssh(void) { scan_ssh(); }
+void scanner_check_permissions(void) { scan_permissions(); }
