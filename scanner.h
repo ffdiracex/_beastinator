@@ -26,6 +26,19 @@
 /* ============================================================
  * SCANNER STATE
  * ============================================================ */
+/* ============================================================
+ * BANNER FUNCTION
+ * ============================================================ */
+
+static inline void syssec_banner(void) {
+    printf(COLOR_CYAN "╔═══════════════════════════════════════════════════════════════╗\n");
+    printf("║                    SYSSEC - System Security Tools                  ║\n");
+    printf("║                    FreeBSD Security Toolkit                        ║\n");
+    printf("║                    Version %s                                      ║\n", SYSSEC_VERSION);
+    printf("╚═══════════════════════════════════════════════════════════════╝\n" COLOR_RESET);
+}
+
+
 
 /*
  * Opaque scanner state structure
