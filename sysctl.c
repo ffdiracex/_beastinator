@@ -103,7 +103,7 @@ static sysctl_error_t sysctl_name_to_mib(const char *name, int *mib, int *mib_le
 }
 
 /* ============================================================
- * INTERNAL: Detect OID Type (No CTLFORMAT)
+ * INTERNAL: Detect OID Type
  * ============================================================ */
 
 static sysctl_error_t sysctl_detect_type(const int *mib, int mib_len,
@@ -508,7 +508,6 @@ sysctl_error_t sysctl_get_modules(module_info_t **modules, int *count) {
         if (p) *p = '\0';
         
         /* Parse: Id Refs Address Size Name */
-        /* Format: "1 1 0xffffffff80200000 0x12345678 kernel" */
         if (sscanf(line, "%d %d %s %zx %[^ ]", &id, &refs, addr, &size, name) == 5) {
             strncpy(result[num].name, name, sizeof(result[num].name) - 1);
             result[num].name[sizeof(result[num].name) - 1] = '\0';
@@ -613,6 +612,7 @@ sysctl_error_t sysctl_set_hostname(const char *hostname) {
         return SYSCTL_ERR_INVALID;
     }
     
+    /* Cast away const for sysctl_value_t */
     value.string_val = (char *)hostname;
     return sysctl_set_value("kern.hostname", &value, SYSCTL_TYPE_STRING);
 }
@@ -867,7 +867,6 @@ sysctl_error_t sysctl_set_value_by_mib(const int *mib, int mib_len,
 sysctl_error_t sysctl_list_nodes(sysctl_state_t *state,
                                  const int *mib, int mib_len,
                                  sysctl_node_t **nodes, int *count) {
-    /* TODO: Implement full tree walking */
     if (!state || !nodes || !count) {
         return SYSCTL_ERR_INVALID;
     }
