@@ -24,39 +24,42 @@
 #include "report.h"
 
 /* ============================================================
- * SCANNER STATE
- * ============================================================ */
-/* ============================================================
- * BANNER FUNCTION
+ * SCANNER STATE - FULL DEFINITION
  * ============================================================ */
 
-static inline void syssec_banner(void) {
-    printf(COLOR_CYAN "╔═══════════════════════════════════════════════════════════════╗\n");
-    printf("║                    SYSSEC - System Security Tools                  ║\n");
-    printf("║                    FreeBSD Security Toolkit                        ║\n");
-    printf("║                    Version %s                                      ║\n", SYSSEC_VERSION);
-    printf("╚═══════════════════════════════════════════════════════════════╝\n" COLOR_RESET);
-}
-
-
-
-/*
- * Opaque scanner state structure
- * The actual implementation is in scanner.c
- */
-typedef struct scanner_state scanner_state_t;
+typedef struct scanner_state {
+    /* Results */
+    struct {
+        char name[128];
+        char description[512];
+        char recommendation[512];
+        syssec_severity_t severity;
+        syssec_status_t status;
+        char category[64];
+    } results[512];
+    int count;
+    
+    /* Configuration */
+    syssec_config_t config;
+    
+    /* System info */
+    char hostname[256];
+    char kernel[512];
+    time_t timestamp;
+    int initialized;
+} scanner_state_t;
 
 /* ============================================================
- * SCAN RESULT ENTRY
+ * SCAN RESULT ENTRY (public version)
  * ============================================================ */
 
 typedef struct {
-    char name[128];                 /* Check name */
-    char description[512];          /* Description of the check */
-    char recommendation[512];       /* Recommendation if failed */
-    syssec_severity_t severity;     /* Critical, Warning, Info */
-    syssec_status_t status;         /* Pass, Warn, Fail */
-    char category[64];              /* Category: System, Security, etc. */
+    char name[128];
+    char description[512];
+    char recommendation[512];
+    syssec_severity_t severity;
+    syssec_status_t status;
+    char category[64];
 } scanner_result_t;
 
 /* ============================================================
