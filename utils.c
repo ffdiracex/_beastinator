@@ -327,3 +327,43 @@ int util_get_process_count(void) {
     
     return count;
 }
+
+/* ============================================================
+ * STRING LIST FUNCTIONS
+ * ============================================================ */
+
+int util_string_list_contains(const char *list, const char *item) {
+    char *list_copy;
+    char *token;
+    char *saveptr;
+    int found = 0;
+    
+    if (!list || !item || list[0] == '\0') {
+        return 0;
+    }
+    
+    list_copy = strdup(list);
+    if (!list_copy) {
+        return 0;
+    }
+    
+    token = strtok_r(list_copy, ",", &saveptr);
+    while (token) {
+        /* Trim whitespace */
+        while (*token == ' ' || *token == '\t') token++;
+        char *end = token + strlen(token) - 1;
+        while (end > token && (*end == ' ' || *end == '\t')) {
+            *end = '\0';
+            end--;
+        }
+        
+        if (strcmp(token, item) == 0) {
+            found = 1;
+            break;
+        }
+        token = strtok_r(NULL, ",", &saveptr);
+    }
+    
+    free(list_copy);
+    return found;
+}
