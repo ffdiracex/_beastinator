@@ -3,7 +3,7 @@
  * 
  * Provides configuration file parsing and management.
  * 
- * Copyright (c) 2024 SYSSEC Project
+ * Copyright (c) 2026-2027 SYSSEC Project
  */
 
 #ifndef SYSSEC_CONFIG_H
