@@ -1,4 +1,4 @@
-o/*
+/*
  * utils.h - Utility functions for SYSSEC tools
  * 
  * Provides common helper functions used across the project.
