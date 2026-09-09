@@ -3,7 +3,7 @@
  * 
  * Provides common helper functions used across the project.
  * 
- * Copyright (c) 2024 SYSSEC Project
+ * Copyright (c) 2026-2027 SYSSEC Project
  */
 
 #ifndef SYSSEC_UTILS_H
