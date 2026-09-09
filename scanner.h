@@ -13,7 +13,7 @@
  * - Update status checking
  * - TTY security scanning
  *
- * Copyright (c) 2024 SYSSEC Project
+ * Copyright (c) 2026-2027 SYSSEC Project
  */
 
 #ifndef SYSSEC_SCANNER_H
