@@ -3,7 +3,7 @@
  * 
  * Provides automated scheduling via cron.
  * 
- * Copyright (c) 2024 SYSSEC Project
+ * Copyright (c) 2026-2027 SYSSEC Project
  */
 
 #ifndef SYSSEC_SCHEDULER_H
