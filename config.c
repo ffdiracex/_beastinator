@@ -299,3 +299,73 @@ void syssec_config_print(syssec_config_t *config) {
     printf("    Updates:     %s\n", config->check_updates ? "yes" : "no");
     printf("    Misc:        %s\n", config->check_misc ? "yes" : "no");
 }
+
+/* ============================================================
+ * CONFIGURATION FUNCTIONS
+ * ============================================================ */
+
+void syssec_config_default_path(char *buffer, size_t size) {
+    if (!buffer || size == 0) {
+        return;
+    }
+    
+    const char *home = getenv("HOME");
+    if (home) {
+        snprintf(buffer, size, "%s/.syssec.conf", home);
+    } else {
+        snprintf(buffer, size, "/etc/syssec/syssec.conf");
+    }
+}
+
+void syssec_config_init(syssec_config_t *config) {
+    if (!config) {
+        return;
+    }
+    
+    memset(config, 0, sizeof(syssec_config_t));
+    
+    /* Default values */
+    config->use_colors = 1;
+    config->verbose = 0;
+    config->json_output = 0;
+    config->html_output = 0;
+    
+    strncpy(config->log_dir, "/var/log/syssec", sizeof(config->log_dir) - 1);
+    strncpy(config->log_file, "syssec.log", sizeof(config->log_file) - 1);
+    config->log_level = 2;
+    
+    config->enable_alerts = 0;
+    strncpy(config->alert_email, "root@localhost", sizeof(config->alert_email) - 1);
+    config->alert_command[0] = '\0';
+    config->alert_cooldown_hours = 24;
+    
+    strncpy(config->report_dir, "/var/log/syssec/reports", sizeof(config->report_dir) - 1);
+    config->save_reports = 1;
+    config->report_retention_days = 30;
+    
+    config->schedule_enabled = 0;
+    strncpy(config->schedule_cron, "0 2 * * *", sizeof(config->schedule_cron) - 1);
+    
+    config->cpu_threshold = 80;
+    config->memory_threshold = 80;
+    config->disk_threshold = 80;
+    config->temperature_threshold = 70;
+    config->load_threshold = 80;
+    
+    config->check_system = 1;
+    config->check_users = 1;
+    config->check_security = 1;
+    config->check_health = 1;
+    config->check_updates = 1;
+    config->check_misc = 1;
+    
+    config->exclude_users[0] = '\0';
+    config->exclude_paths[0] = '\0';
+    config->exclude_services[0] = '\0';
+    
+    strncpy(config->dns_servers, "8.8.8.8,8.8.4.4", sizeof(config->dns_servers) - 1);
+    strncpy(config->ntp_servers, "0.freebsd.pool.ntp.org,1.freebsd.pool.ntp.org", 
+            sizeof(config->ntp_servers) - 1);
+    
+    config->initialized = 1;
+}
