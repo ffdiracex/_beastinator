@@ -47,8 +47,10 @@ typedef struct scanner_state {
     char kernel[512];
     time_t timestamp;
     int initialized;
-} scanner_state_t;
+} 
 
+typedef struct scanner_state scanner_state_t;
+syssec_error_t scanner_init(syssec_config_t *config);
 /* ============================================================
  * SCAN RESULT ENTRY (public version)
  * ============================================================ */
