@@ -3,7 +3,7 @@
  * 
  * Provides structured logging with rotation support.
  * 
- * Copyright (c) 2024 SYSSEC Project
+ * Copyright (c) 2026-2027 SYSSEC Project
  */
 
 #ifndef SYSSEC_LOGGING_H
