@@ -4,7 +4,7 @@
  * Provides a complete interface to the sysctl(3) system,
  * including module information, process data, and system statistics.
  * 
- * Copyright (c) 2024 SYSSEC Project
+ * Copyright (c) 2026-2027 SYSSEC Project
  */
 
 #ifndef SYSSEC_SYSCTL_H
