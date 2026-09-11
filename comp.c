@@ -82,14 +82,8 @@ static void add_result(syssec_t *s, const char *category,
 }
 
 /* ============================================================
- * HELPER: Run command and check exit code
+ * HELPER FUNCTIONS
  * ============================================================ */
-
-static int cmd_exists(const char *cmd) {
-    char buf[256];
-    snprintf(buf, sizeof(buf), "command -v %s >/dev/null 2>&1", cmd);
-    return system(buf) == 0;
-}
 
 static int proc_running(const char *name) {
     char buf[256];
@@ -204,15 +198,16 @@ void syssec_check_system(syssec_t *s) {
         snprintf(buf, sizeof(buf), "%.2f, %.2f, %.2f", l1, l5, l15);
         
         status_t status = STATUS_PASS;
+        severity_t sev = SEV_INFO;
         const char *rec = NULL;
+        
         if (s->ncpu > 0 && l1 > s->ncpu * 1.5) {
             status = STATUS_WARN;
+            sev = SEV_WARNING;
             rec = "High load - check running processes";
         }
         
-        add_result(s, "System", "Load Average", buf,
-                   status == STATUS_WARN ? SEV_WARNING : SEV_INFO,
-                   status, rec);
+        add_result(s, "System", "Load Average", buf, sev, status, rec);
     }
 }
 
@@ -556,7 +551,7 @@ void syssec_check_security(syssec_t *s) {
     
     /* Kernel modules: check for hidden modules */
     struct kld_file_stat kfs;
-    int fileid = kldfirst(0);
+    int fileid = kldnext(0);  /* ✅ Fixed: was kldfirst(0) */
     int hidden = 0;
     
     while (fileid > 0) {
@@ -597,7 +592,6 @@ void syssec_check_ssh(syssec_t *s) {
     int permit_root = 0;
     int password_auth = 0;
     int x11_forward = 0;
-    int found = 0;
     
     if (!s) return;
     
@@ -620,7 +614,6 @@ void syssec_check_ssh(syssec_t *s) {
         if (*p == '#' || *p == '\0') continue;
         
         if (strncasecmp(p, "PermitRootLogin", 15) == 0) {
-            found++;
             if (strcasestr(p, "yes") && !strcasestr(p, "without-password") &&
                 !strcasestr(p, "prohibit-password")) {
                 permit_root = 1;
@@ -628,7 +621,6 @@ void syssec_check_ssh(syssec_t *s) {
         }
         
         if (strncasecmp(p, "PasswordAuthentication", 22) == 0) {
-            found++;
             if (strcasestr(p, "yes")) {
                 password_auth = 1;
             }
@@ -705,7 +697,6 @@ void syssec_check_suid(syssec_t *s) {
         char *nl = strchr(line, '\n');
         if (nl) *nl = '\0';
         
-        /* Skip empty lines */
         if (line[0] == '\0') continue;
         
         count++;
@@ -721,7 +712,7 @@ void syssec_check_suid(syssec_t *s) {
         
         if (!known) {
             suspicious++;
-            if (strlen(suspicious_list) < sizeof(suspicious_list) - 256) {
+            if (strlen(suspicious_list) < sizeof(suspicious_list) - 64) {
                 if (suspicious_list[0]) {
                     strncat(suspicious_list, ", ", sizeof(suspicious_list) - strlen(suspicious_list) - 1);
                 }
@@ -792,11 +783,9 @@ void syssec_check_ttys(syssec_t *s) {
                 strncmp(link, "/dev/pts/", 9) == 0) {
                 total_ttys++;
                 
-                /* Extract TTY name */
                 const char *tty = strrchr(link, '/');
                 tty = tty ? tty + 1 : link;
                 
-                /* Check if this TTY has a login session */
                 char cmd[512];
                 snprintf(cmd, sizeof(cmd), "who 2>/dev/null | grep -q '%s'", tty);
                 if (system(cmd) != 0) {
@@ -966,13 +955,11 @@ void syssec_print_results(syssec_t *s) {
     for (int i = 0; i < s->count; i++) {
         result_t *r = &s->results[i];
         
-        /* Print category header if changed */
         if (strcmp(r->category, last_category) != 0) {
             printf("\n" COL_BOLD "[%s]" COL_RESET "\n", r->category);
             last_category = r->category;
         }
         
-        /* Print status with color */
         const char *color;
         const char *symbol;
         
@@ -994,7 +981,6 @@ void syssec_print_results(syssec_t *s) {
         printf("  %s%s %-25s%s %s\n",
                color, symbol, r->name, COL_RESET, r->description);
         
-        /* Print recommendation if failed/warning */
         if (r->recommendation[0] != '\0' &&
             (r->status == STATUS_FAIL || r->status == STATUS_WARN)) {
             printf("     " COL_DIM "→ %s" COL_RESET "\n", r->recommendation);
@@ -1094,7 +1080,6 @@ int syssec_save_report(syssec_t *s, const char *path) {
     fprintf(fp, "<p><strong>Kernel:</strong> %s</p>\n", s->os_release);
     fprintf(fp, "<p><strong>Timestamp:</strong> %s</p>\n", ctime(&s->timestamp));
     
-    /* Summary */
     fprintf(fp, "<div class=\"summary\">\n");
     fprintf(fp, "<div class=\"summary-item pass\"><strong>✓ Passed:</strong> %d</div>\n", s->passed);
     fprintf(fp, "<div class=\"summary-item warn\"><strong>⚠ Warnings:</strong> %d</div>\n", s->warnings);
@@ -1102,7 +1087,6 @@ int syssec_save_report(syssec_t *s, const char *path) {
     fprintf(fp, "<div class=\"summary-item\"><strong>Total:</strong> %d</div>\n", s->count);
     fprintf(fp, "</div>\n");
     
-    /* Group by category */
     const char *last_category = "";
     for (int i = 0; i < s->count; i++) {
         result_t *r = &s->results[i];
@@ -1162,7 +1146,6 @@ int main(int argc, char **argv) {
     int quiet = 0;
     int critical_only = 0;
     
-    /* Parse arguments */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
             verbose = 1;
@@ -1183,30 +1166,25 @@ int main(int argc, char **argv) {
         }
     }
     
-    /* Set log level */
     if (verbose) {
         g_log_level = LOG_DEBUG;
     } else if (quiet) {
         g_log_level = LOG_ERROR;
     }
     
-    /* Print banner */
     if (!quiet && !critical_only) {
         syssec_print_banner();
     }
     
-    /* Check root */
     if (geteuid() != 0) {
         syssec_log(LOG_WARNING, "Not running as root - some checks will be limited");
     } else {
         syssec_log(LOG_DEBUG, "Running as root - full scan available");
     }
     
-    /* Initialize and scan */
     syssec_init(&syssec, verbose);
     syssec_scan(&syssec);
     
-    /* Print results */
     if (critical_only) {
         syssec_print_critical(&syssec);
     } else if (verbose) {
@@ -1218,7 +1196,6 @@ int main(int argc, char **argv) {
         syssec_print_recommendations(&syssec);
     }
     
-    /* Save report */
     if (output) {
         if (syssec_save_report(&syssec, output) == 0) {
             if (!quiet) {
@@ -1227,9 +1204,8 @@ int main(int argc, char **argv) {
         }
     }
     
-    /* Cleanup */
+    int ret = (syssec.failures > 0) ? 1 : 0;
     syssec_free(&syssec);
     
-    /* Return based on findings */
-    return (syssec.failures > 0) ? 1 : 0;
+    return ret;
 }
